@@ -27,6 +27,31 @@ class Settings(BaseSettings):
     agent_host: str = "0.0.0.0"
     agent_port: int = 8000
 
+    # --- remote MCP (OAuth) -------------------------------------------------
+    # mcp.mailafrica.online serves the tool surface as a streamable-HTTP MCP
+    # server. Users authenticate as *their own* MailAfrica account via
+    # CamelAccounts; the server never sees the platform (MAIL_) key.
+    mcp_host: str = "0.0.0.0"
+    mcp_port: int = 8098
+    mcp_issuer_url: str = "https://mcp.mailafrica.online"
+    mcp_resource_url: str = "https://mcp.mailafrica.online/mcp"
+    mcp_service_documentation_url: str = "https://docs.mailafrica.online/mcp"
+    mcp_camel_redirect_uri: str = "https://mcp.mailafrica.online/oauth/callback"
+    mcp_access_token_ttl_minutes: int = 60
+    mcp_refresh_token_ttl_days: int = 30
+    mcp_cipher_key: str = ""
+    mcp_cipher_key_path: str = ".mcp_fernet.key"
+    mcp_registration_enabled: bool = True
+    mcp_default_scopes: list[str] = []
+    mcp_required_scopes: list[str] = []
+
+    # CamelAccounts OAuth *client* credentials used by the MCP authorize flow.
+    # Create this client in the CamelAccounts admin (redirect URI must be
+    # mcp_camel_redirect_uri) — it is separate from the web app's client.
+    camel_accounts_issuer_url: str = ""
+    camel_accounts_client_id: str = ""
+    camel_accounts_client_secret: str = ""
+
     @property
     def db_path(self) -> Path:
         return Path(self.agent_db_path).expanduser()

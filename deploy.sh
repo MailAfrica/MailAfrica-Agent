@@ -11,16 +11,21 @@ git pull --ff-only origin main
 if command -v docker >/dev/null 2>&1 && [ -f "docker-compose.yml" ]; then
   echo "[deploy] deploying container via Docker Compose..."
   docker compose up -d --build
-elif systemctl is-active --quiet mailafrica-agent-webhook; then
+else
   echo "[deploy] installing dependencies (uv)..."
   if command -v uv >/dev/null 2>&1; then
     uv sync --frozen
   fi
-  echo "[deploy] restarting systemd service..."
-  systemctl restart mailafrica-agent-webhook
-else
-  echo "[deploy] starting Docker Compose..."
-  docker compose up -d --build
+  for unit in mailafrica-agent-webhook mailafrica-agent-mcp; do
+    if systemctl is-active --quiet "$unit" || systemctl is-enabled --quiet "$unit" 2>/dev/null; then
+      echo "[deploy] restarting $unit..."
+      systemctl restart "$unit"
+    fi
+  done
+  if ! systemctl is-active --quiet mailafrica-agent-webhook; then
+    echo "[deploy] starting Docker Compose..."
+    docker compose up -d --build
+  fi
 fi
 
 echo "[deploy] deployment complete!"

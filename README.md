@@ -6,7 +6,10 @@ two things:
 1. **MCP server** — exposes the entire MailAfrica API (send/receive email,
    domains, webhooks, wallet) as tools to any AI agent (Claude Desktop, Claude
    Code, Cursor, or any MCP client), so the agent can operate your mail
-   programmatically.
+   programmatically. It ships in two flavours: a local **stdio** server driven
+   by your `MAIL_...` key, and a hosted **streamable-HTTP** server
+   (`mcp.mailafrica.online`) where every customer signs in with CamelAccounts
+   and the tools act on *their own* account.
 2. **Auto-reply agent** — when email arrives at one of your inbound addresses,
    a webhook fires, an LLM (via the [Ngamia](https://docs.ngamia.cc)
    OpenAI-compatible gateway) reads the full conversation and writes a reply,
@@ -55,7 +58,7 @@ Three pieces talk to each other:
 | **Ngamia** | OpenAI-compatible gateway (`api.ngamia.cc/v1`) | The brain. Generates reply text from a system prompt + conversation history. One `ngm_...` key, many models, TZS credit billing. |
 | **MailAfrica Agent** (this repo) | Python (FastMCP + FastAPI + SQLite) | The glue. Exposes MailAfrica as MCP tools, receives webhook notifications, keeps thread memory, calls Ngamia, sends replies. |
 
-Two processes run from this repo (they can share the same SQLite file thanks
+Three processes run from this repo (they can share the same SQLite file thanks
 to WAL mode):
 
 ```
@@ -63,7 +66,11 @@ to WAL mode):
 │  Process 1: `mailafrica-agent mcp`         │  stdio MCP server,
 │  → spoken to by Claude/Cursor/any agent    │  credentials from .env
 ├────────────────────────────────────────────┤
-│  Process 2: `mailafrica-agent webhook`     │  FastAPI HTTP server,
+│  Process 2: `mailafrica-agent mcp-http`    │  streamable-HTTP MCP server,
+│  → mcp.mailafrica.online (multi-tenant     │  OAuth (CamelAccounts login);
+│    OAuth; per-user credentials)            │  no platform key involved
+├────────────────────────────────────────────┤
+│  Process 3: `mailafrica-agent webhook`     │  FastAPI HTTP server,
 │  → receives MailAfrica webhook POSTs       │  HMAC-verified
 └────────────────────────────────────────────┘
 ```
@@ -121,7 +128,26 @@ single source of truth shared with the web app (see
 `build_server(Runtime)` returns a `FastMCP` server with the tools in the
 [tools reference](#mcp-tools-reference). `Runtime` is a small container that
 wires the client, the store and the agent together and manages their
-lifespans (connect on start, close on exit).
+lifespans (connect on start, close on exit). Tools resolve their credentials
+*per request*: under OAuth each call rides the connecting user's MailAfrica
+JWT (`mail_for_context` / `agent_for_context`); under stdio they fall back to
+the platform key, so the two modes share the same tool code.
+
+### `mailafrica_agent/mcp_oauth.py` — the remote MCP OAuth server
+
+The multi-tenant server is its own OAuth *authorization server* (RFC 6749 +
+PKCE, served by the `mcp` SDK at `/register`, `/authorize`, `/token`,
+`/revoke`, `/.well-known/...`), with the user identity delegated to
+CamelAccounts: `/authorize` redirects to CamelAccounts; our
+`/oauth/callback` exchanges the code, asks MailAfrica's
+`/api/auth/camel-accounts/mcp` endpoint for that user's JWT + refresh cookie,
+stashes the session, and returns an MCP authorization code to the client.
+`MailAfricaProvider` implements the storage: client secrets and delegated
+refresh tokens are Fernet-encrypted at rest (`MCP_CIPHER_KEY` /
+`MCP_CIPHER_KEY_PATH`), OAuth tokens are single-use and stored as SHA-256
+hashes, and refresh tokens rotate on every use (60-minute access / 30-day
+refresh, mirroring MailAfrica's own cookie lifecycle). Revocation deletes the
+session so the user's keys can never be used again.
 
 ### `mailafrica_agent/webhook.py` — the webhook receiver
 
@@ -136,7 +162,7 @@ A FastAPI app with one endpoint, `POST /webhooks/mailafrica`. It:
 
 ### `mailafrica_agent/__main__.py` — CLI
 
-`mailafrica-agent mcp | webhook | check`.
+`mailafrica-agent mcp | mcp-http | webhook | check`.
 
 ---
 
@@ -175,11 +201,26 @@ straight:
 
 ### 4. MCP transport
 
-- The MCP server runs over **stdio**: your MCP client (Claude Desktop, Claude
-  Code, Cursor) spawns `mailafrica-agent mcp` as a local child process.
+- The stdio MCP server runs over **stdio**: your MCP client (Claude Desktop,
+  Claude Code, Cursor) spawns `mailafrica-agent mcp` as a local child process.
   There is no network listener and no client authentication — the client is
   whoever can launch the process, and it reads credentials from `.env` on
   the same machine. Do not run the stdio server on a shared host.
+
+### 5. Remote MCP OAuth (multi-tenant)
+
+- `mailafrica-agent mcp-http` serves the same tools at
+  `mcp.mailafrica.online`. It is its own OAuth authorization server:
+  a customer opens `/authorize`, signs in with **CamelAccounts**, and is
+  redirected back with an MCP access token bound to *their* MailAfrica
+  account. Every tool call then forwards that user's MailAfrica JWT
+  (`Authorization: Bearer ...`) — the hosted server never holds, sees, or
+  uses your `MAIL_...` key.
+- Secrets at rest (MCP client secrets, delegated refresh cookies) are
+  Fernet-encrypted in `mcp.key` (mode `0600`) on the server; the file is
+  git-ignored and lives only on the VPS.
+- In production the reverse proxy terminates TLS and must forward the real
+  `Host` header (the SDK rejects unknown hosts).
 
 ### Auth flow diagram
 
@@ -229,6 +270,20 @@ configured model — a quick way to confirm both keys work.
 | `AGENT_DEFAULT_PERSONA` | built-in assistant persona | Fallback system prompt for addresses without a custom persona. |
 | `AGENT_DEFAULT_MODE` | `off` | Default mode: `auto`, `draft` or `off`. |
 | `AGENT_HOST` / `AGENT_PORT` | `0.0.0.0` / `8097` | Webhook HTTP server bind address. |
+| `MCP_PORT` | `8098` | Remote MCP server bind address. |
+| `MCP_ISSUER_URL` | `https://mcp.mailafrica.online` | OAuth issuer URL for the remote MCP server. |
+| `MCP_RESOURCE_URL` | `https://mcp.mailafrica.online/mcp` | The protected resource (`/mcp`) URL. |
+| `MCP_SERVICE_DOCUMENTATION_URL` | `https://docs.mailafrica.online/mcp` | OAuth service-documentation link. |
+| `MCP_CAMEL_REDIRECT_URI` | `https://mcp.mailafrica.online/oauth/callback` | CamelAccounts callback; path is served automatically. |
+| `MCP_ACCESS_TOKEN_TTL_MINUTES` | `60` | MCP access-token lifetime. |
+| `MCP_REFRESH_TOKEN_TTL_DAYS` | `30` | MCP refresh-token lifetime. |
+| `MCP_CIPHER_KEY` | _(empty)_ | Fernet key for secrets at rest. Empty → generate into `MCP_CIPHER_KEY_PATH`. |
+| `MCP_CIPHER_KEY_PATH` | `.mcp_fernet.key` | Where the Fernet key file lives (git-ignored, `0600`). |
+| `MCP_REGISTRATION_ENABLED` | `true` | Allow dynamic client registration (RFC 7591). |
+| `MCP_DEFAULT_SCOPES` / `MCP_REQUIRED_SCOPES` | _(empty)_ | Optional OAuth scopes for the remote MCP server. |
+| `CAMEL_ACCOUNTS_ISSUER_URL` | _(empty)_ | CamelAccounts base URL used by the MCP authorize flow. |
+| `CAMEL_ACCOUNTS_CLIENT_ID` | _(empty)_ | CamelAccounts OAuth client id (redirect URI = `MCP_CAMEL_REDIRECT_URI`). |
+| `CAMEL_ACCOUNTS_CLIENT_SECRET` | _(empty)_ | CamelAccounts OAuth client secret. |
 
 ---
 
@@ -248,6 +303,28 @@ Register in Claude Desktop — `claude_desktop_config.json`:
     "mailafrica-agent": {
       "command": "uv",
       "args": ["run", "--directory", "/path/to/MailAfrica-Agent", "mailafrica-agent", "mcp"]
+    }
+  }
+}
+```
+
+### Remote MCP server (multi-tenant OAuth)
+
+```bash
+uv run mailafrica-agent mcp-http
+```
+
+Customers connect any OAuth-capable MCP client to
+`https://mcp.mailafrica.online/mcp`. The client dynamic-registers, then the
+user signs in with CamelAccounts on first use; afterwards tokens refresh
+silently for up to 30 days before another sign-in is needed.
+
+```json
+{
+  "mcpServers": {
+    "mailafrica": {
+      "type": "http",
+      "url": "https://mcp.mailafrica.online/mcp"
     }
   }
 }
@@ -423,30 +500,45 @@ The last 40 turns are used, so multi-turn conversations stay coherent.
 ## Deployment (VPS)
 
 The agent deploys to the same VPS that hosts MailAfrica's API, fronted by the
-`agent.mailafrica.online` subdomain. Everything is in `deploy/`:
+`agent.mailafrica.online` (webhook) and `mcp.mailafrica.online` (remote MCP)
+subdomains. Everything is in `deploy/`:
 
 - **`.github/workflows/deploy.yml`** — on push to `main`, GitHub Actions SSHes
   to the VPS with a restricted deploy key. Pushing triggers an auto-deploy,
   mirroring Mail-API's pipeline.
 - **`deploy.sh`** — the forced command on the deploy key: `git pull --ff-only`,
-  `uv sync --frozen`, `systemctl restart mailafrica-agent-webhook`.
-- **`deploy/mailafrica-agent-webhook.service`** — the `systemd` unit for the
-  webhook process (binds `0.0.0.0:8097`).
+  `uv sync --frozen`, then restarts whichever of `mailafrica-agent-webhook` /
+  `mailafrica-agent-mcp` are installed.
+- **`deploy/mailafrica-agent-webhook.service`** — systemd unit for the webhook
+  process (binds `0.0.0.0:8097`).
+- **`deploy/mailafrica-agent-mcp.service`** — systemd unit for the remote MCP
+  process (binds `0.0.0.0:8098`, OAuth on `mcp.mailafrica.online`).
 - **`deploy/setup_vps.sh`** — one-time root script on the VPS: creates the
   `mailafrica` user, clones the repo, installs uv deps, generates the
-  restricted deploy key, installs the unit, and prints the exact Caddy/nginx
-  snippet for `agent.mailafrica.online` → `127.0.0.1:8097` plus the GitHub
-  secrets to set (`SSH_PRIVATE_KEY`, `SSH_HOST`, `SSH_PORT`, `SSH_USER`).
+  restricted deploy key, installs both units, and prints the exact Caddy/nginx
+  snippets (`agent.mailafrica.online` → `127.0.0.1:8097`,
+  `mcp.mailafrica.online` → `127.0.0.1:8098`) plus the GitHub secrets to set
+  (`SSH_PRIVATE_KEY`, `SSH_HOST`, `SSH_PORT`, `SSH_USER`).
 
 ```bash
 # from your laptop, run once on the VPS as root:
 scp deploy/setup_vps.sh root@<VPS>:/tmp/
 ssh root@<VPS> bash /tmp/setup_vps.sh
-# then: edit the .env, systemctl enable --now mailafrica-agent-webhook
+# then: edit the .env, systemctl enable --now mailafrica-agent-webhook mailafrica-agent-mcp
 ```
 
-The **MCP server runs locally on your machine** (stdio) and is never deployed
-— only the webhook process lives on the VPS.
+**Going live on `mcp.mailafrica.online` (once, by the platform team):**
+
+1. Point the subdomain at the VPS and add a reverse proxy → `127.0.0.1:8098`
+   (Caddy preserves `Host`; the SDK requires the real host).
+2. Create a CamelAccounts OAuth **client** with redirect URI
+   `https://mcp.mailafrica.online/oauth/callback` and put its id/secret +
+   `CAMEL_ACCOUNTS_ISSUER_URL` in `.env`.
+3. `systemctl enable --now mailafrica-agent-mcp`; the Fernet key file is
+   created on first boot (`MCP_CIPHER_KEY_PATH`, `0600`).
+
+The **stdio MCP server runs locally on your machine** (nothing to deploy);
+only the webhook and remote MCP processes live on the VPS.
 
 ---
 

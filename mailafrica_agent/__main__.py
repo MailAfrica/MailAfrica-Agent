@@ -24,6 +24,18 @@ def _cmd_mcp() -> int:
     return 0
 
 
+def _cmd_mcp_http() -> int:
+    """Run the multi-tenant OAuth MCP server over streamable HTTP."""
+    from .mcp_oauth import OAuthGroup, build_http_app
+
+    settings = get_settings()
+    runtime = Runtime(settings)
+    oauth = OAuthGroup(runtime, settings)
+    app = build_http_app(build_server(runtime, oauth=oauth), runtime)
+    uvicorn.run(app, host=settings.mcp_host, port=settings.mcp_port, log_level="info")
+    return 0
+
+
 def _cmd_webhook() -> int:
     settings = get_settings()
     app = create_app(settings)
@@ -63,11 +75,10 @@ def _cmd_check() -> int:
 
 def main() -> int:
     parser = argparse.ArgumentParser(prog="mailafrica-agent")
-    parser.add_argument(
-        "-v", "--verbose", action="store_true", help="enable debug logging"
-    )
+    parser.add_argument("-v", "--verbose", action="store_true", help="enable debug logging")
     sub = parser.add_subparsers(dest="command", required=True)
     sub.add_parser("mcp", help="run the MCP server over stdio")
+    sub.add_parser("mcp-http", help="run the multi-tenant OAuth MCP server over streamable HTTP")
     sub.add_parser("webhook", help="run the webhook HTTP server (uvicorn)")
     sub.add_parser("check", help="verify config + API connectivity")
 
@@ -79,6 +90,8 @@ def main() -> int:
 
     if args.command == "mcp":
         return _cmd_mcp()
+    if args.command == "mcp-http":
+        return _cmd_mcp_http()
     if args.command == "webhook":
         return _cmd_webhook()
     if args.command == "check":

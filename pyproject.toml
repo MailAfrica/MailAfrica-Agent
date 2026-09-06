@@ -11,6 +11,7 @@ dependencies = [
     "openai>=1.55,<2",
     "pydantic-settings>=2.6,<3",
     "aiosqlite>=0.20,<1",
+    "cryptography>=42,<51",
 ]
 
 [project.scripts]

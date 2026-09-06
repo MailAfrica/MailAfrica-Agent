@@ -1,0 +1,21 @@
+[Unit]
+Description=MailAfrica Agent remote MCP (multi-tenant OAuth, mcp.mailafrica.online)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=mailafrica
+Group=mailafrica
+WorkingDirectory=/home/mailafrica/projects/mailafrica-agent
+EnvironmentFile=/home/mailafrica/projects/mailafrica-agent/.env
+ExecStart=/home/mailafrica/projects/mailafrica-agent/.venv/bin/mailafrica-agent mcp-http
+Restart=always
+RestartSec=3
+# The MCP key file + sqlite db live in the working dir, so give it write access.
+NoNewPrivileges=true
+ProtectSystem=full
+ReadWritePaths=/home/mailafrica/projects/mailafrica-agent
+
+[Install]
+WantedBy=multi-user.target

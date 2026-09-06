@@ -19,14 +19,31 @@ class MailAfricaError(Exception):
 class MailAfricaClient:
     """Minimal client for the MailAfrica API (https://api.mailafrica.online).
 
-    A single MAIL_... API key authenticates every endpoint. Responses come
-    wrapped as {"success": bool, "message": str, "data": {...}, "errors": [...]}.
+    Authenticates as either a single account (a MAIL_... API key, used by the
+    stdio MCP mode and the webhook agent) or as an individual user (a Bearer
+    JWT minted for them via /api/auth/*, used by the remote OAuth MCP mode).
+    Responses come wrapped as {"success": bool, "message": str, "data": {...},
+    "errors": [...]}.
     """
 
-    def __init__(self, base_url: str, api_key: str, timeout: float = 20.0):
+    def __init__(
+        self,
+        base_url: str,
+        api_key: str | None = None,
+        *,
+        bearer_token: str | None = None,
+        timeout: float = 20.0,
+    ):
+        headers = {"Accept": "application/json"}
+        if bearer_token is not None:
+            headers["Authorization"] = f"Bearer {bearer_token}"
+        elif api_key:
+            headers["X-API-Key"] = api_key
+        else:
+            raise ValueError("MailAfricaClient requires an api_key or bearer_token")
         self._client = httpx.AsyncClient(
             base_url=base_url.rstrip("/"),
-            headers={"X-API-Key": api_key, "Accept": "application/json"},
+            headers=headers,
             timeout=timeout,
         )
 
@@ -130,7 +147,7 @@ class MailAfricaClient:
     # --- webhooks -----------------------------------------------------------
 
     async def list_webhooks(self, address_id: int) -> list[dict[str, Any]]:
-        data = await self._request("GET", f"/webhooks/webhooks?address_id={address_id}")
+        data = await self._request("GET", f"/webhook/webhooks?address_id={address_id}")
         return data if isinstance(data, list) else []
 
     async def create_webhook(
@@ -139,13 +156,13 @@ class MailAfricaClient:
         payload: dict[str, Any] = {"address_id": address_id, "url": url}
         if secret:
             payload["secret"] = secret
-        return await self._request("POST", "/webhooks/webhooks", json=payload)
+        return await self._request("POST", "/webhook/webhooks", json=payload)
 
     async def delete_webhook(self, webhook_id: int) -> dict[str, Any]:
-        return await self._request("DELETE", f"/webhooks/webhooks/{webhook_id}")
+        return await self._request("DELETE", f"/webhook/webhooks/{webhook_id}")
 
     async def test_webhook(self, webhook_id: int) -> dict[str, Any]:
-        return await self._request("POST", f"/webhooks/webhooks/{webhook_id}/test")
+        return await self._request("POST", f"/webhook/webhooks/{webhook_id}/test")
 
     # --- agent config (single source of truth lives in Mail-API) ------------
 

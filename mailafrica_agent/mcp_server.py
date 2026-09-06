@@ -4,14 +4,6 @@ import warnings
 from contextlib import asynccontextmanager
 from typing import Any
 
-# The mcp SDK declares FastMCP.lifespan with an unresolved forward reference,
-# which Pydantic flags once on construction. Harmless; silence just that.
-warnings.filterwarnings(
-    "ignore",
-    message="Field 'lifespan' has an incomplete definition",
-    category=Warning,
-)
-
 from mcp.server.fastmcp import FastMCP
 
 from .agent import Agent
@@ -20,18 +12,34 @@ from .mailafrica import MailAfricaClient
 from .ngamia import NgamiaClient
 from .store import Store
 
+# The mcp SDK declares FastMCP.lifespan with an unresolved forward reference,
+# which Pydantic flags once on construction. Harmless; silence just that.
+warnings.filterwarnings(
+    "ignore",
+    message="Field 'lifespan' has an incomplete definition",
+    category=Warning,
+)
+
 MODES = ("auto", "draft", "off")
 
 
 class Runtime:
-    """Shared component container for both the MCP server and the webhook app."""
+    """Shared component container for both the MCP server and the webhook app.
+
+    ``oauth`` is set only for the remote multi-tenant mode; when present every
+    tool resolves the *connecting user's* MailAfrica credentials via
+    ``mail_for_context`` / ``agent_for_context`` instead of the platform key.
+    """
 
     def __init__(self, settings: Settings):
         self.settings = settings
         self.mail = MailAfricaClient(settings.mailafrica_api_base, settings.mailafrica_api_key)
-        self.ngamia = NgamiaClient(settings.ngamia_base_url, settings.ngamia_api_key, settings.ngamia_model)
+        self.ngamia = NgamiaClient(
+            settings.ngamia_base_url, settings.ngamia_api_key, settings.ngamia_model
+        )
         self.store = Store(str(settings.db_path))
         self.agent = Agent(settings, self.mail, self.ngamia, self.store)
+        self.oauth: Any | None = None
         self._connected = False
 
     async def connect(self) -> None:
@@ -39,13 +47,75 @@ class Runtime:
         self._connected = True
 
     async def aclose(self) -> None:
+        if self.oauth is not None:
+            await self.oauth.aclose()
         if self._connected:
             await self.store.close()
         await self.mail.aclose()
         await self.ngamia.aclose()
 
+    async def mail_for_context(self) -> MailAfricaClient:
+        """The client for the authenticated MCP user, or the platform key when
+        running stdio/single-tenant."""
+        subject = _request_subject()
+        if subject is not None and self.oauth is not None:
+            return await self.oauth.mail_for_user(subject)
+        return self.mail
 
-def build_server(runtime: Runtime) -> FastMCP:
+    async def agent_for_context(self) -> Agent:
+        subject = _request_subject()
+        if subject is not None and self.oauth is not None:
+            return await self.oauth.agent_for_user(subject)
+        return self.agent
+
+
+def settings_url(value: str) -> Any:
+    """Coerce a settings string to a pydantic AnyHttpUrl for AuthSettings."""
+    from pydantic import AnyHttpUrl
+
+    return AnyHttpUrl(value)
+
+
+class _ToolClient:
+    """Resolves the calling MCP user's own MailAfrica client on each call.
+
+    Without an OAuth subject (stdio/single-tenant) this forwards to the
+    platform-keyed client, so tool behavior is unchanged there."""
+
+    def __init__(self, runtime: Runtime):
+        self._runtime = runtime
+
+    def __getattr__(self, name: str):
+        async def call(*args, **kwargs):
+            return await getattr(await self._runtime.mail_for_context(), name)(*args, **kwargs)
+
+        call.__name__ = name
+        return call
+
+
+class _ToolAgent:
+    """Resolves the calling MCP user's auto-reply Agent on each call."""
+
+    def __init__(self, runtime: Runtime):
+        self._runtime = runtime
+
+    def __getattr__(self, name: str):
+        async def call(*args, **kwargs):
+            return await getattr(await self._runtime.agent_for_context(), name)(*args, **kwargs)
+
+        call.__name__ = name
+        return call
+
+
+def _request_subject() -> str | None:
+    """The resource owner for the current MCP request under OAuth, else None."""
+    from mcp.server.auth.middleware.auth_context import get_access_token
+
+    token = get_access_token()
+    return token.subject if token is not None else None
+
+
+def build_server(runtime: Runtime, oauth: Any | None = None) -> FastMCP:
     @asynccontextmanager
     async def lifespan(_: FastMCP):
         await runtime.connect()
@@ -54,10 +124,47 @@ def build_server(runtime: Runtime) -> FastMCP:
         finally:
             await runtime.aclose()
 
-    mcp = FastMCP("mailafrica-agent", lifespan=lifespan)
-    mail = runtime.mail
+    kwargs: dict[str, Any] = {}
+    if oauth is not None:
+        from mcp.server.auth.settings import (
+            AuthSettings,
+            ClientRegistrationOptions,
+            RevocationOptions,
+        )
+
+        kwargs = {
+            "auth_server_provider": oauth.provider,
+            "auth": AuthSettings(
+                issuer_url=settings_url(runtime.settings.mcp_issuer_url),
+                resource_server_url=settings_url(runtime.settings.mcp_resource_url),
+                service_documentation_url=(
+                    settings_url(runtime.settings.mcp_service_documentation_url)
+                    if runtime.settings.mcp_service_documentation_url
+                    else None
+                ),
+                client_registration_options=ClientRegistrationOptions(
+                    enabled=runtime.settings.mcp_registration_enabled,
+                    default_scopes=runtime.settings.mcp_default_scopes or None,
+                ),
+                revocation_options=RevocationOptions(enabled=True),
+            ),
+        }
+
+    mcp = FastMCP("mailafrica-agent", lifespan=lifespan, **kwargs)
+    mail = _ToolClient(runtime)
     ngamia = runtime.ngamia
-    agent = runtime.agent
+    agent = _ToolAgent(runtime)
+
+    if oauth is not None:
+        import urllib.parse
+
+        callback_path = (
+            urllib.parse.urlsplit(runtime.settings.mcp_camel_redirect_uri).path or "/oauth/callback"
+        )
+
+        @mcp.custom_route(callback_path, methods=["GET"])
+        async def camel_oauth_callback(request):  # noqa: ANN001
+            return await oauth.handle_camel_callback(request)
 
     # ---- outbound ----------------------------------------------------------
 
@@ -191,12 +298,16 @@ def build_server(runtime: Runtime) -> FastMCP:
         source of truth shared with the web app)."""
         if mode is not None and mode not in MODES:
             return {"error": f"mode must be one of {MODES}"}
-        kwargs = {k: v for k, v in {
-            "mode": mode,
-            "persona": persona,
-            "reply_from_domain_id": reply_from_domain_id,
-            "reply_from_address": reply_from_address,
-        }.items() if v is not None}
+        kwargs = {
+            k: v
+            for k, v in {
+                "mode": mode,
+                "persona": persona,
+                "reply_from_domain_id": reply_from_domain_id,
+                "reply_from_address": reply_from_address,
+            }.items()
+            if v is not None
+        }
         return await mail.set_agent_config(address_id, **kwargs)
 
     @mcp.tool()

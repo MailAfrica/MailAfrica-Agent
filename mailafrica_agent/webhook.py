@@ -5,10 +5,9 @@ import hmac
 import logging
 from contextlib import asynccontextmanager
 
-from fastapi import FastAPI, Request, Response
-from fastapi.responses import JSONResponse
-
+from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 
 from .config import Settings
@@ -52,9 +51,12 @@ def create_app(settings: Settings) -> FastAPI:
         try:
             reply = await runtime.agent.chat(req.messages)
             return JSONResponse({"reply": reply})
-        except Exception as exc:
+        except Exception:
             logger.exception("chat endpoint error")
-            return JSONResponse({"reply": "I encountered an error processing your query. Please try again."}, status_code=500)
+            return JSONResponse(
+                {"reply": "I encountered an error processing your query. Please try again."},
+                status_code=500,
+            )
 
     @app.post("/webhooks/mailafrica")
     async def mailafrica_webhook(request: Request) -> JSONResponse:

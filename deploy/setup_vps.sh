@@ -60,8 +60,9 @@ echo "==> installing dependencies"
 cd "$APP_DIR"
 sudo -u "$APP_USER" uv sync --frozen
 
-echo "==> installing systemd unit"
+echo "==> installing systemd units"
 sed "s|/home/mailafrica|/home/${APP_USER}|g" "$APP_DIR/deploy/mailafrica-agent-webhook.service" > /etc/systemd/system/mailafrica-agent-webhook.service
+sed "s|/home/mailafrica|/home/${APP_USER}|g" "$APP_DIR/deploy/mailafrica-agent-mcp.service" > /etc/systemd/system/mailafrica-agent-mcp.service
 systemctl daemon-reload
 
 echo "==> restricted deploy key (one-time)"
@@ -95,9 +96,19 @@ echo "4. Point agent.mailafrica.online at the VPS, then reverse-proxy it:
    nginx:
      server_name agent.mailafrica.online;
      location / { proxy_pass http://127.0.0.1:8097; }
-5. Install + start the webhook unit once .env is valid:
-     systemctl enable --now mailafrica-agent-webhook
-6. In the MailAfrica app, create a webhook on each inbound address:
+5. Remote MCP (multi-tenant OAuth): same box, new listener + subdomain.
+   Caddy:
+     mcp.mailafrica.online {
+       reverse_proxy 127.0.0.1:8098
+     }
+   nginx:
+     server_name mcp.mailafrica.online;
+     location / { proxy_pass http://127.0.0.1:8098; }
+   Then set the CamelAccounts OAuth client in .env (redirect URI must be
+   https://mcp.mailafrica.online/oauth/callback) and start both units once
+   .env is valid:
+     systemctl enable --now mailafrica-agent-webhook mailafrica-agent-mcp
+ 6. In the MailAfrica app, create a webhook on each inbound address:
      URL:    ${WEBHOOK_URL}
      Secret: the AGENT_WEBHOOK_SECRET you set in .env
    Or let the agent create them (MCP tool create_webhook)."

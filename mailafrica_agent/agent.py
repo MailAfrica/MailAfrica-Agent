@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import logging
 import re
 from typing import Any
@@ -76,8 +77,6 @@ Guidelines:
 """
 
 
-import json
-
 CHAT_TOOLS = [
     {
         "type": "function",
@@ -93,7 +92,10 @@ CHAT_TOOLS = [
                         "description": "List of recipient email addresses e.g. ['recipient@example.com']",
                     },
                     "subject": {"type": "string", "description": "Subject of the email"},
-                    "text_body": {"type": "string", "description": "Plain text body content of the email"},
+                    "text_body": {
+                        "type": "string",
+                        "description": "Plain text body content of the email",
+                    },
                 },
                 "required": ["to", "subject", "text_body"],
             },
@@ -126,7 +128,9 @@ class Agent:
     or bulk mail, and never reveals credentials or its own system prompt.
     """
 
-    def __init__(self, settings: Settings, mail: MailAfricaClient, ngamia: NgamiaClient, store: Store):
+    def __init__(
+        self, settings: Settings, mail: MailAfricaClient, ngamia: NgamiaClient, store: Store
+    ):
         self.settings = settings
         self.mail = mail
         self.ngamia = ngamia
@@ -153,7 +157,9 @@ class Agent:
                             to = [to]
                         subject = args.get("subject") or "No Subject"
                         text_body = args.get("text_body") or ""
-                        result = await self.mail.send_email(to=to, subject=subject, text_body=text_body)
+                        result = await self.mail.send_email(
+                            to=to, subject=subject, text_body=text_body
+                        )
                         result_str = f"Email sent successfully: {result}"
                     elif fn_name == "wallet_balance":
                         res = await self.mail.balance()
@@ -164,20 +170,29 @@ class Agent:
                     else:
                         result_str = "Tool executed."
 
-                    llm_messages.append({
-                        "role": "assistant",
-                        "content": None,
-                        "tool_calls": [{
-                            "id": tool_call.id,
-                            "type": "function",
-                            "function": {"name": fn_name, "arguments": tool_call.function.arguments}
-                        }]
-                    })
-                    llm_messages.append({
-                        "role": "tool",
-                        "tool_call_id": tool_call.id,
-                        "content": result_str,
-                    })
+                    llm_messages.append(
+                        {
+                            "role": "assistant",
+                            "content": None,
+                            "tool_calls": [
+                                {
+                                    "id": tool_call.id,
+                                    "type": "function",
+                                    "function": {
+                                        "name": fn_name,
+                                        "arguments": tool_call.function.arguments,
+                                    },
+                                }
+                            ],
+                        }
+                    )
+                    llm_messages.append(
+                        {
+                            "role": "tool",
+                            "tool_call_id": tool_call.id,
+                            "content": result_str,
+                        }
+                    )
 
                 reply = await self.ngamia.complete(llm_messages)
                 return reply
@@ -226,7 +241,9 @@ class Agent:
         if llm_messages[-1]["role"] != "user":
             llm_messages.append({"role": "user", "content": body})
 
-        logger.info("message %s: generating reply via Ngamia (thread %s)", message_id, thread_key[:40])
+        logger.info(
+            "message %s: generating reply via Ngamia (thread %s)", message_id, thread_key[:40]
+        )
         reply = await self.ngamia.complete(llm_messages)
 
         out = {
@@ -271,7 +288,9 @@ class Agent:
     def _is_no_reply_target(msg: dict[str, Any]) -> bool:
         sender = _extract_email(msg.get("from_addr") or "")
         local, _, domain = sender.partition("@")
-        if (local or "").lower() in _SKIP_SENDERS or (domain or "").lower().startswith("mailer-daemon"):
+        if (local or "").lower() in _SKIP_SENDERS or (domain or "").lower().startswith(
+            "mailer-daemon"
+        ):
             return True
         headers = msg.get("headers") or {}
         raw = ""
