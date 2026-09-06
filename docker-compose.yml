@@ -5,18 +5,23 @@ services:
     build:
       context: .
       dockerfile: Dockerfile
-    container_name: mailafrica-agent-webhook
+    container_name: mailafrica-agent
     restart: unless-stopped
+    entrypoint: ["/app/docker-entrypoint.sh"]
     env_file:
       - .env
     ports:
       - "8097:8097"
+      - "8098:8098"
     volumes:
       - agent_data:/app/data
     environment:
       - AGENT_HOST=0.0.0.0
       - AGENT_PORT=8097
+      - MCP_HOST=0.0.0.0
+      - MCP_PORT=8098
       - AGENT_DB_PATH=/app/data/agent.db
+      - MCP_CIPHER_KEY_PATH=/app/data/mcp.key
     healthcheck:
       test: ["CMD-SHELL", "curl -f http://localhost:8097/health || exit 1"]
       interval: 30s

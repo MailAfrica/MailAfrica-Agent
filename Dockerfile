@@ -34,6 +34,9 @@ RUN apt-get update && apt-get install -y --no-install-recommends curl && rm -rf 
 COPY --from=builder /app/.venv /app/.venv
 COPY --from=builder /app/mailafrica_agent /app/mailafrica_agent
 COPY --from=builder /app/pyproject.toml /app/
+COPY docker-entrypoint.sh /app/docker-entrypoint.sh
+
+RUN chmod +x /app/docker-entrypoint.sh
 
 # Create data directory for SQLite database storage
 RUN mkdir -p /app/data

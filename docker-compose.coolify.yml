@@ -2,8 +2,10 @@ services:
   mailafrica-agent:
     build: .
     restart: unless-stopped
+    entrypoint: ["/app/docker-entrypoint.sh"]
     ports:
       - "8097:8097"
+      - "8098:8098"
     volumes:
       - /var/lib/docker/volumes/grzvmmh9gaky1elejsqk4d6w_mailafrica-agent-agent-data/_data:/app/data
     environment:
@@ -16,6 +18,17 @@ services:
       AGENT_DB_PATH: /app/data/agent.db
       AGENT_HOST: 0.0.0.0
       AGENT_PORT: "8097"
+      MCP_HOST: 0.0.0.0
+      MCP_PORT: "8098"
+      MCP_ISSUER_URL: ${MCP_ISSUER_URL:-https://mcp.mailafrica.online}
+      MCP_RESOURCE_URL: ${MCP_RESOURCE_URL:-https://mcp.mailafrica.online/mcp}
+      MCP_SERVICE_DOCUMENTATION_URL: ${MCP_SERVICE_DOCUMENTATION_URL:-https://docs.mailafrica.online/mcp}
+      MCP_CAMEL_REDIRECT_URI: ${MCP_CAMEL_REDIRECT_URI:-https://mcp.mailafrica.online/oauth/callback}
+      MCP_CIPHER_KEY_PATH: /app/data/mcp.key
+      MCP_REGISTRATION_ENABLED: ${MCP_REGISTRATION_ENABLED:-true}
+      CAMEL_ACCOUNTS_ISSUER_URL: ${CAMEL_ACCOUNTS_ISSUER_URL:-}
+      CAMEL_ACCOUNTS_CLIENT_ID: ${CAMEL_ACCOUNTS_CLIENT_ID:-}
+      CAMEL_ACCOUNTS_CLIENT_SECRET: ${CAMEL_ACCOUNTS_CLIENT_SECRET:-}
     healthcheck:
       test: ["CMD-SHELL", "curl -f http://localhost:8097/health || exit 1"]
       interval: 30s
