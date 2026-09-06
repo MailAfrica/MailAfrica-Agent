@@ -1,4 +1,4 @@
-name: Deploy
+name: Deploy to Coolify
 
 on:
   push:
@@ -6,19 +6,15 @@ on:
 
 jobs:
   deploy:
-    name: Deploy to VPS
     runs-on: ubuntu-latest
     steps:
       - name: Deploy over SSH
         env:
-          SSH_PRIVATE_KEY: ${{ secrets.SSH_PRIVATE_KEY }}
-          SSH_HOST: ${{ secrets.SSH_HOST }}
-          SSH_PORT: ${{ secrets.SSH_PORT }}
-          SSH_USER: ${{ secrets.SSH_USER }}
+          VPS_SSH_KEY: ${{ secrets.VPS_SSH_KEY }}
+          VPS_HOST_KEY: ${{ secrets.VPS_HOST_KEY }}
         run: |
-          mkdir -p ~/.ssh
-          echo "$SSH_PRIVATE_KEY" > ~/.ssh/deploy_key
-          chmod 600 ~/.ssh/deploy_key
-          ssh-keyscan -p "${SSH_PORT:-22}" "$SSH_HOST" >> ~/.ssh/known_hosts 2>/dev/null
-
-          ssh -i ~/.ssh/deploy_key -p "${SSH_PORT:-22}" "$SSH_USER@$SSH_HOST" "cd /home/camel/projects/mailafrica-agent && chmod +x deploy.sh && ./deploy.sh"
+          mkdir -p ~/.ssh && chmod 700 ~/.ssh
+          echo "$VPS_HOST_KEY" > ~/.ssh/known_hosts
+          echo "$VPS_SSH_KEY" > ~/.ssh/id_deploy
+          chmod 600 ~/.ssh/known_hosts ~/.ssh/id_deploy
+          ssh -i ~/.ssh/id_deploy -o IdentitiesOnly=yes -p 4444 camel@13.140.167.42 'bash /home/camel/deploy/deploy.sh mailafrica-agent'
