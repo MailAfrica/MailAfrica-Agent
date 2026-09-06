@@ -1,6 +1,7 @@
 from functools import lru_cache
 from pathlib import Path
 
+from pydantic import field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -28,9 +29,6 @@ class Settings(BaseSettings):
     agent_port: int = 8000
 
     # --- remote MCP (OAuth) -------------------------------------------------
-    # mcp.mailafrica.online serves the tool surface as a streamable-HTTP MCP
-    # server. Users authenticate as *their own* MailAfrica account via
-    # CamelAccounts; the server never sees the platform (MAIL_) key.
     mcp_host: str = "0.0.0.0"
     mcp_port: int = 8098
     mcp_issuer_url: str = "https://mcp.mailafrica.online"
@@ -46,11 +44,25 @@ class Settings(BaseSettings):
     mcp_required_scopes: list[str] = []
 
     # CamelAccounts OAuth *client* credentials used by the MCP authorize flow.
-    # Create this client in the CamelAccounts admin (redirect URI must be
-    # mcp_camel_redirect_uri) — it is separate from the web app's client.
     camel_accounts_issuer_url: str = ""
     camel_accounts_client_id: str = ""
     camel_accounts_client_secret: str = ""
+
+    @field_validator("mcp_default_scopes", "mcp_required_scopes", mode="before")
+    @classmethod
+    def _parse_list(cls, value: str | None) -> list[str]:
+        if not value:
+            return []
+        if isinstance(value, list):
+            return [str(item) for item in value]
+        import json
+        try:
+            parsed = json.loads(value)
+            if isinstance(parsed, list):
+                return [str(item) for item in parsed]
+        except (json.JSONDecodeError, TypeError):
+            pass
+        return [str(value)]
 
     @property
     def db_path(self) -> Path:
